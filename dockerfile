@@ -17,7 +17,7 @@ RUN npm run build
 # ---- Runtime: both processes, one container ----
 FROM node:20-bookworm-slim AS runtime
 
-WORKDIR /ap
+WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3000
