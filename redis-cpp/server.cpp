@@ -648,7 +648,7 @@ static bool try_one_request(Conn *conn) {
     uint32_t len = 0;
     memcpy(&len, conn->incoming.data(), 4);
     if (len > k_max_msg) {
-        msg("too long");
+        // msg("too long");
         conn->want_close = true;
         return false;   // want close
     }
@@ -716,7 +716,7 @@ static void handle_read(Conn *conn) {
     // handle EOF
     if (rv == 0) {
         if (conn->incoming.size() == 0) {
-            msg("client closed");
+            // msg("client closed");
         } else {
             msg("unexpected EOF");
         }
