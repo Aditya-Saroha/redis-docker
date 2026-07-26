@@ -1,17 +1,10 @@
 import Link from "next/link";
 import { kvKeys, kvPTTL } from "@/lib/kvClient";
 import { setKeyAction, deleteKeyAction } from "./actions";
+import { StatsPanel } from "@/components/StatsPanel";
+import { TtlBadge } from "@/components/TtlBadge";
 
 export const dynamic = "force-dynamic";
-
-function formatTtl(ttlMs: number): string {
-  if (ttlMs === -2) return "gone";
-  if (ttlMs === -1) return "no expiry";
-  const s = Math.ceil(ttlMs / 1000);
-  if (s < 60) return `${s}s left`;
-  const m = Math.ceil(s / 60);
-  return `${m}m left`;
-}
 
 export default async function KeysPage() {
   let keys: string[] = [];
@@ -57,6 +50,13 @@ export default async function KeysPage() {
         </div>
       )}
 
+      {!connError && (
+        <section>
+          <h2 className="text-sm font-medium mb-3">Live stats</h2>
+          <StatsPanel />
+        </section>
+      )}
+
       <section className="rounded-lg border border-border-hairline bg-surface overflow-hidden">
         {rows.length === 0 && !connError && (
           <p className="px-4 py-6 text-sm text-muted">
@@ -73,9 +73,7 @@ export default async function KeysPage() {
                 {key}
               </Link>
               <div className="flex items-center gap-3">
-                <span className="font-mono text-xs text-muted">
-                  {formatTtl(ttl)}
-                </span>
+                <TtlBadge initialTtlMs={ttl} />
                 <form action={deleteKeyAction}>
                   <input type="hidden" name="key" value={key} />
                   <button
