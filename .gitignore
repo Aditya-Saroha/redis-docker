@@ -1,0 +1,26 @@
+# Secrets — never commit real values
+.env
+.env.local
+kvdash/.env
+kvdash/.env.local
+
+# Node / npm
+node_modules/
+kvdash/node_modules/
+npm-debug.log*
+
+# Next.js build output
+.next/
+kvdash/.next/
+out/
+
+# C++ build artifacts
+redis-cpp/*.o
+redis-cpp/server
+redis-cpp/kv-server
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
