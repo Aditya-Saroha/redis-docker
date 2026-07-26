@@ -222,40 +222,6 @@ export async function kvZScore(
   return res.value;
 }
 
-export interface KvStats {
-  connections: number;
-  totalConnections: number;
-  opsPerSec: number;
-  totalOps: number;
-  keys: number;
-  uptimeMs: number;
-  memoryKb: number;
-}
-
-export async function kvStats(): Promise<KvStats> {
-  const res = await sendCommand(["stats"]);
-  unwrapErr(res);
-  if (res.type !== "arr") throw new Error("unexpected response for stats");
-  const map: Record<string, number> = {};
-  for (let i = 0; i < res.value.length; i += 2) {
-    const k = res.value[i];
-    const v = res.value[i + 1];
-    if (k.type !== "str" || v.type !== "int") {
-      throw new Error("bad stats entry");
-    }
-    map[k.value] = v.value;
-  }
-  return {
-    connections: map.connections ?? 0,
-    totalConnections: map.total_connections ?? 0,
-    opsPerSec: map.ops_per_sec ?? 0,
-    totalOps: map.total_ops ?? 0,
-    keys: map.keys ?? 0,
-    uptimeMs: map.uptime_ms ?? 0,
-    memoryKb: map.memory_kb ?? 0,
-  };
-}
-
 export interface ZMember {
   name: string;
   score: number;
