@@ -45,6 +45,18 @@ static uint64_t get_monotonic_msec() {
     return uint64_t(tv.tv_sec) * 1000 + tv.tv_nsec / 1000 / 1000;
 }
 
+static long get_rss_kb() {
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (!f) return -1;
+    long size = 0, resident = 0;
+    if (fscanf(f, "%ld %ld", &size, &resident) != 2) {
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    return resident * (sysconf(_SC_PAGESIZE) / 1024);
+}
+
 static void fd_set_nb(int fd) {
     errno = 0;
     int flags = fcntl(fd, F_GETFL, 0);
@@ -92,14 +104,18 @@ struct Conn {
 // global states
 static struct {
     HMap db;
-    // a map of all client connections, keyed by fd
     std::vector<Conn *> fd2conn;
-    // timers for idle connections
     DList idle_list;
-    // timers for TTLs
     std::vector<HeapItem> heap;
-    // the thread pool
     TheadPool thread_pool;
+    // stats
+    uint64_t start_time_ms = 0;
+    uint64_t active_conns = 0;
+    uint64_t total_conns = 0;
+    uint64_t total_cmds = 0;
+    uint64_t cmds_this_second = 0;
+    uint64_t ops_per_sec = 0;
+    uint64_t last_stats_ms = 0;
 } g_data;
 
 // application callback when the listening socket is ready
@@ -134,6 +150,8 @@ static int32_t handle_accept(int fd) {
     }
     assert(!g_data.fd2conn[conn->fd]);
     g_data.fd2conn[conn->fd] = conn;
+    g_data.total_conns++;
+    g_data.active_conns++;
     return 0;
 }
 
@@ -141,6 +159,7 @@ static void conn_destroy(Conn *conn) {
     (void)close(conn->fd);
     g_data.fd2conn[conn->fd] = NULL;
     dlist_detach(&conn->idle_node);
+    g_data.active_conns--;
     delete conn;
 }
 
@@ -594,6 +613,27 @@ static void do_zquery(std::vector<std::string> &cmd, Buffer &out) {
     out_end_arr(out, ctx, (uint32_t)n);
 }
 
+static void do_stats(std::vector<std::string> &, Buffer &out) {
+    uint64_t uptime_ms = get_monotonic_msec() - g_data.start_time_ms;
+    long rss_kb = get_rss_kb();
+
+    size_t ctx = out_begin_arr(out);
+    uint32_t n = 0;
+    auto pair = [&](const char *k, int64_t v) {
+        out_str(out, k, strlen(k));
+        out_int(out, v);
+        n += 2;
+    };
+    pair("connections", (int64_t)g_data.active_conns);
+    pair("total_connections", (int64_t)g_data.total_conns);
+    pair("ops_per_sec", (int64_t)g_data.ops_per_sec);
+    pair("total_ops", (int64_t)g_data.total_cmds);
+    pair("keys", (int64_t)hm_size(&g_data.db));
+    pair("uptime_ms", (int64_t)uptime_ms);
+    pair("memory_kb", (int64_t)(rss_kb >= 0 ? rss_kb : 0));
+    out_end_arr(out, ctx, n);
+}
+
 static void do_request(std::vector<std::string> &cmd, Buffer &out) {
     if (cmd.size() == 2 && cmd[0] == "get") {
         return do_get(cmd, out);
@@ -607,6 +647,8 @@ static void do_request(std::vector<std::string> &cmd, Buffer &out) {
         return do_ttl(cmd, out);
     } else if (cmd.size() == 1 && cmd[0] == "keys") {
         return do_keys(cmd, out);
+    } else if (cmd.size() == 1 && cmd[0] == "stats") {
+        return do_stats(cmd, out);
     } else if (cmd.size() == 4 && cmd[0] == "zadd") {
         return do_zadd(cmd, out);
     } else if (cmd.size() == 3 && cmd[0] == "zrem") {
@@ -669,7 +711,8 @@ static bool try_one_request(Conn *conn) {
     response_begin(conn->outgoing, &header_pos);
     do_request(cmd, conn->outgoing);
     response_end(conn->outgoing, header_pos);
-
+    g_data.total_cmds++;
+    g_data.cmds_this_second++;
     // application logic done! remove the request message.
     buf_consume(conn->incoming, 4 + len);
     // Q: Why not just empty the buffer? See the explanation of "pipelining".
@@ -741,25 +784,25 @@ static void handle_read(Conn *conn) {
 }
 
 const uint64_t k_idle_timeout_ms = 5 * 1000;
-
 static uint32_t next_timer_ms() {
     uint64_t now_ms = get_monotonic_msec();
     uint64_t next_ms = (uint64_t)-1;
-    // idle timers using a linked list
     if (!dlist_empty(&g_data.idle_list)) {
         Conn *conn = container_of(g_data.idle_list.next, Conn, idle_node);
         next_ms = conn->last_active_ms + k_idle_timeout_ms;
     }
-    // TTL timers using a heap
     if (!g_data.heap.empty() && g_data.heap[0].val < next_ms) {
         next_ms = g_data.heap[0].val;
     }
-    // timeout value
+    uint64_t stats_due = g_data.last_stats_ms + 1000;
+    if (stats_due < next_ms) {
+        next_ms = stats_due;
+    }
     if (next_ms == (uint64_t)-1) {
-        return -1;  // no timers, no timeouts
+        return -1;
     }
     if (next_ms <= now_ms) {
-        return 0;   // missed?
+        return 0;
     }
     return (int32_t)(next_ms - now_ms);
 }
@@ -769,8 +812,12 @@ static bool hnode_same(HNode *node, HNode *key) {
 }
 
 static void process_timers() {
-    uint64_t now_ms = get_monotonic_msec();
-    // idle timers using a linked list
+        uint64_t now_ms = get_monotonic_msec();
+    if (now_ms - g_data.last_stats_ms >= 1000) {
+        g_data.ops_per_sec = g_data.cmds_this_second;
+        g_data.cmds_this_second = 0;
+        g_data.last_stats_ms = now_ms;
+    }
     while (!dlist_empty(&g_data.idle_list)) {
         Conn *conn = container_of(g_data.idle_list.next, Conn, idle_node);
         uint64_t next_ms = conn->last_active_ms + k_idle_timeout_ms;
@@ -803,7 +850,8 @@ int main() {
     // initialization
     dlist_init(&g_data.idle_list);
     thread_pool_init(&g_data.thread_pool, 4);
-
+    g_data.start_time_ms = get_monotonic_msec();
+    g_data.last_stats_ms = g_data.start_time_ms;
     // the listening socket
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {

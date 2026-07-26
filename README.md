@@ -60,4 +60,3 @@ Deployed on [Render](https://render.com) as a single Docker-based Web Service:
 
 - Custom hash table, AVL tree, binary heap, and sorted-set implementations from scratch — no STL containers used for the core store logic
 - Thread pool for handling concurrent client connections
-- Binds to `0.0.0.0` so it's reachable from other containers / the host, not just `localhost`
